@@ -1,0 +1,744 @@
+import React, { useState, useRef } from 'react';
+import { 
+  Upload, 
+  Image as ImageIcon, 
+  Video, 
+  Check, 
+  Copy, 
+  RefreshCcw, 
+  Sparkles, 
+  Instagram, 
+  Facebook, 
+  Linkedin, 
+  BookOpen,
+  Share2,
+  Type,
+  Download,
+  ArrowRight,
+  Layout,
+  Palette,
+  Maximize,
+  Wand2, 
+  Loader2,
+  FileText,
+  UserCircle2
+} from 'lucide-react';
+
+export default function PostAssistant() {
+  const [step, setStep] = useState(1); // 1: Input, 2: Generating, 3: Result
+  
+  // 主素材
+  const [media, setMedia] = useState(null);
+  const [mediaPreview, setMediaPreview] = useState(null);
+  const [mediaType, setMediaType] = useState('image'); 
+  
+  // 參考素材 (新增)
+  const [refMedia, setRefMedia] = useState(null);
+  const [refMediaPreview, setRefMediaPreview] = useState(null);
+  const [refText, setRefText] = useState('');
+
+  // AI 生成的新圖
+  const [aiCoverImage, setAiCoverImage] = useState(null); 
+
+  const [platform, setPlatform] = useState('instagram');
+  const [keywords, setKeywords] = useState('');
+  const [cta, setCta] = useState('');
+  
+  // 視覺風格描述狀態
+  const [visualStyle, setVisualStyle] = useState('');
+
+  // 人設/場景狀態 (修改)
+  const [persona, setPersona] = useState('blogger'); 
+
+  // 封面圖設定狀態
+  const [coverRatio, setCoverRatio] = useState('4/5'); 
+  const [coverStyle, setCoverStyle] = useState('magazine'); 
+
+  const [generatedResult, setGeneratedResult] = useState(null);
+  const [isCopied, setIsCopied] = useState(false);
+  const [errorMsg, setErrorMsg] = useState('');
+  const [loadingStatus, setLoadingStatus] = useState('');
+
+  const fileInputRef = useRef(null);
+  const refFileInputRef = useRef(null); // 參考圖片的 ref
+  const apiKey = ""; // 使用執行環境提供的 API Key
+
+  const fileToBase64 = (file) => {
+    return new Promise((resolve, reject) => {
+      const reader = new FileReader();
+      reader.onload = () => {
+        const base64String = reader.result.split(',')[1];
+        resolve(base64String);
+      };
+      reader.onerror = reject;
+      reader.readAsDataURL(file);
+    });
+  };
+
+  const handleFileChange = (e) => {
+    const file = e.target.files[0];
+    if (file) {
+      setMedia(file);
+      setMediaPreview(URL.createObjectURL(file));
+      setMediaType(file.type.startsWith('video') ? 'video' : 'image');
+      setAiCoverImage(null);
+    }
+  };
+
+  // 處理參考圖片上傳
+  const handleRefFileChange = (e) => {
+    const file = e.target.files[0];
+    if (file) {
+      setRefMedia(file);
+      setRefMediaPreview(URL.createObjectURL(file));
+    }
+  };
+
+  // 呼叫 Gemini 進行文字生成 (文案 + 排版建議)
+  const generateTextAndLayout = async (base64MainImage, base64RefImage, selectedPersona) => {
+    setLoadingStatus('正在分析參考資料與撰寫文案...');
+    
+    let systemPrompt = `你是一個專業的社群媒體經營專家。
+    請根據使用者提供的「主要圖片」、關鍵字、發布平台與「人設(Persona)」，生成貼文內容。
+    
+    使用者設定：
+    - 平台：${platform}
+    - 關鍵字：${keywords}
+    - 發文人設/場景：${selectedPersona.name} (${selectedPersona.desc})
+    - 視覺設計需求：${visualStyle || '由 AI 根據圖片判斷'}
+    - CTA：${cta || '由你決定'}
+    
+    【重要：參考資料使用規則】
+    使用者可能會提供「參考圖片」或「參考文案」。
+    1. 請分析參考資料的「語氣結構」、「排版邏輯」或「敘事風格」。
+    2. 將這些風格應用在本次的創作中。
+    3. 絕對**不能**直接複製參考資料的內容，必須基於「主要圖片」和「關鍵字」進行原創。
+    4. 如果有參考文案：${refText ? `參考文案內容為："${refText}"` : '無'}。
+
+    目前系統支援以下四種封面排版風格 (Layout Styles)：
+    1. magazine (雜誌風：適合時尚、豐富資訊，文字在底部)
+    2. minimal (極簡白：適合文青、乾淨，文字置中)
+    3. bold (大標題：適合促銷、強烈視覺，黃底黑字)
+    4. cinematic (電影感：適合敘事、氛圍，上下黑邊)
+
+    請回傳純 JSON 物件：
+    {
+      "caption": "貼文內文 (請完全符合選定的人設語氣)",
+      "hashtags": "hashtag",
+      "coverTitle": "封面標題 (2-6字)",
+      "coverSubtitle": "封面副標題 (10-15字)",
+      "suggestedLayout": "magazine" 或 "minimal" 或 "bold" 或 "cinematic"
+    }
+    `;
+
+    if (platform === 'blog') {
+      systemPrompt += `\n特別注意：生成一篇 Markdown 格式的部落格長文。`;
+    }
+
+    // 建構 Multi-modal 內容
+    const contentParts = [
+      { text: systemPrompt },
+      { text: "【主要圖片 (基於此圖創作)】：" },
+      { inlineData: { mimeType: 'image/jpeg', data: base64MainImage } }
+    ];
+
+    if (base64RefImage) {
+      contentParts.push({ text: "【參考圖片 (僅供風格參考，非創作主體)】：" });
+      contentParts.push({ inlineData: { mimeType: 'image/jpeg', data: base64RefImage } });
+    }
+
+    const response = await fetch(`https://generativelanguage.googleapis.com/v1beta/models/gemini-2.5-flash-preview-09-2025:generateContent?key=${apiKey}`, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({
+        contents: [{ parts: contentParts }],
+        generationConfig: { responseMimeType: "application/json" }
+      })
+    });
+
+    const data = await response.json();
+    if (!data.candidates) throw new Error("Text API Error");
+    return JSON.parse(data.candidates[0].content.parts[0].text);
+  };
+
+  // 呼叫 Gemini 進行影像重繪 (Image Editing)
+  const generateStyledImage = async (base64Image) => {
+    if (!visualStyle) return null;
+    
+    setLoadingStatus(`正在依據「${visualStyle}」繪製新圖片...`);
+    
+    const imagePrompt = `Modify this image to match the following style description strictly: ${visualStyle}. High quality, detailed, aesthetic social media cover.`;
+
+    try {
+      const response = await fetch(`https://generativelanguage.googleapis.com/v1beta/models/gemini-2.5-flash-image-preview:generateContent?key=${apiKey}`, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({
+          contents: [{
+            parts: [
+              { text: imagePrompt },
+              { inlineData: { mimeType: 'image/jpeg', data: base64Image } }
+            ]
+          }],
+          generationConfig: { 
+            responseModalities: ["IMAGE"] 
+          }
+        })
+      });
+
+      const data = await response.json();
+      if (!data.candidates || !data.candidates[0].content.parts[0].inlineData) {
+        return null;
+      }
+      return `data:image/jpeg;base64,${data.candidates[0].content.parts[0].inlineData.data}`;
+    } catch (e) {
+      console.error("Image Gen Error:", e);
+      return null;
+    }
+  };
+
+  const callGeminiAPI = async () => {
+    if (!media) return;
+
+    setStep(2);
+    setErrorMsg('');
+    setAiCoverImage(null);
+
+    try {
+      // 1. 準備圖片資料
+      const base64Main = await fileToBase64(media);
+      const base64Ref = refMedia ? await fileToBase64(refMedia) : null;
+      
+      const selectedPersona = personas.find(p => p.id === persona) || personas[0];
+
+      // 2. 平行執行
+      const [textResult, imageResult] = await Promise.all([
+        generateTextAndLayout(base64Main, base64Ref, selectedPersona),
+        visualStyle ? generateStyledImage(base64Main) : Promise.resolve(null)
+      ]);
+
+      // 3. 處理結果
+      setGeneratedResult(textResult);
+      if (textResult.suggestedLayout && coverStyles[textResult.suggestedLayout]) {
+        setCoverStyle(textResult.suggestedLayout);
+      }
+
+      if (imageResult) {
+        setAiCoverImage(imageResult);
+      }
+
+      setStep(3);
+
+    } catch (err) {
+      console.error(err);
+      setErrorMsg("AI 處理時發生錯誤，請稍後再試。");
+      setStep(1);
+    }
+  };
+
+  const resetApp = () => {
+    setStep(1);
+    setGeneratedResult(null);
+    setIsCopied(false);
+    setErrorMsg('');
+    setVisualStyle('');
+    setAiCoverImage(null);
+    setRefMedia(null);
+    setRefMediaPreview(null);
+    setRefText('');
+  };
+
+  const handleCopy = () => {
+    if (generatedResult) {
+      navigator.clipboard.writeText(generatedResult.caption);
+      setIsCopied(true);
+      setTimeout(() => setIsCopied(false), 2000);
+    }
+  };
+
+  // 修改：人設/場景選項
+  const personas = [
+    { id: 'politician', name: '政治人物', emoji: '🏛️', desc: '穩重、感性、使命感、號召力' },
+    { id: 'company', name: '企業/品牌', emoji: '🏢', desc: '專業、信任、價值主張、官方口吻' },
+    { id: 'celebrity', name: '藝人/網紅', emoji: '✨', desc: '吸睛、個人風格強烈、寵粉、活潑' },
+    { id: 'blogger', name: '部落客/KOL', emoji: '✍️', desc: '乾貨分享、親切體驗、條理分明' },
+    { id: 'friend', name: '朋友/日常', emoji: '🤝', desc: '輕鬆、真實、無距離感、口語化' },
+  ];
+
+  const ratios = [
+    { id: '1/1', name: '正方形 (1:1)', class: 'aspect-square' },
+    { id: '4/5', name: 'IG 貼文 (4:5)', class: 'aspect-[4/5]' },
+    { id: '16/9', name: '橫式 (16:9)', class: 'aspect-video' },
+    { id: '9/16', name: '限動 (9:16)', class: 'aspect-[9/16]' },
+  ];
+
+  const coverStyles = {
+    magazine: {
+      name: '雜誌風',
+      overlayClass: 'bg-gradient-to-t from-black/80 via-transparent to-black/30',
+      textContainerClass: 'bottom-12 left-6 right-6 text-left',
+      titleClass: 'text-3xl font-bold font-serif leading-tight mb-3 drop-shadow-xl text-white',
+      subtitleClass: 'text-sm text-white/80 font-light tracking-wide italic',
+      deco: (platform) => (
+        <div className="absolute top-6 left-6 right-6 border-t border-white/50 pt-2 flex justify-between items-center">
+           <span className="text-[10px] tracking-[0.2em] uppercase text-white/90">{platform.toUpperCase()} ISSUE</span>
+           <span className="text-[10px] text-white/90">VOL.01</span>
+        </div>
+      )
+    },
+    minimal: {
+      name: '極簡白',
+      overlayClass: 'bg-white/10 backdrop-blur-[2px] m-4 rounded-xl border border-white/20 shadow-2xl',
+      textContainerClass: 'inset-0 flex flex-col items-center justify-center text-center p-6',
+      titleClass: 'text-2xl font-bold tracking-wider text-white drop-shadow-md mb-4 uppercase',
+      subtitleClass: 'text-xs text-white/90 bg-black/20 px-3 py-1 rounded-full backdrop-blur-md',
+      deco: () => null
+    },
+    bold: {
+      name: '大標題',
+      overlayClass: 'bg-black/40',
+      textContainerClass: 'bottom-0 left-0 right-0 bg-yellow-400 p-6 text-black',
+      titleClass: 'text-4xl font-black uppercase tracking-tighter leading-none mb-2 text-black',
+      subtitleClass: 'text-sm font-bold text-black/70',
+      deco: () => (
+         <div className="absolute top-4 right-4 bg-black text-white font-bold px-3 py-1 text-sm -rotate-3">
+           NEW!
+         </div>
+      )
+    },
+    cinematic: {
+      name: '電影感',
+      overlayClass: 'bg-gradient-to-b from-black/60 via-transparent to-black/80',
+      textContainerClass: 'bottom-8 left-0 right-0 text-center',
+      titleClass: 'text-xl font-light tracking-[0.5em] text-white mb-2 uppercase text-shadow-sm',
+      subtitleClass: 'text-xs text-gray-300 font-serif italic',
+      deco: () => (
+        <>
+          <div className="absolute top-0 left-0 right-0 h-[10%] bg-black"></div>
+          <div className="absolute bottom-0 left-0 right-0 h-[10%] bg-black"></div>
+        </>
+      )
+    }
+  };
+
+  const platforms = [
+    { id: 'instagram', name: 'Instagram', icon: <Instagram size={18} />, color: 'bg-gradient-to-tr from-yellow-400 via-red-500 to-purple-500 text-white' },
+    { id: 'facebook', name: 'Facebook', icon: <Facebook size={18} />, color: 'bg-blue-600 text-white' },
+    { id: 'linkedin', name: 'LinkedIn', icon: <Linkedin size={18} />, color: 'bg-blue-700 text-white' },
+    { id: 'threads', name: 'Threads', icon: <span className="font-bold text-lg leading-none">@</span>, color: 'bg-black text-white' },
+    { id: 'blog', name: '部落格', icon: <BookOpen size={18} />, color: 'bg-emerald-600 text-white' },
+  ];
+
+  const currentStyle = coverStyles[coverStyle];
+
+  return (
+    <div className="min-h-screen bg-slate-50 font-sans text-slate-800 pb-20">
+      <header className="bg-white border-b border-slate-200 sticky top-0 z-20">
+        <div className="max-w-6xl mx-auto px-4 h-16 flex items-center justify-between">
+          <div className="flex items-center gap-2 cursor-pointer" onClick={resetApp}>
+            <div className="bg-indigo-600 p-2 rounded-lg text-white">
+              <Sparkles size={20} />
+            </div>
+            <h1 className="text-xl font-bold bg-clip-text text-transparent bg-gradient-to-r from-indigo-600 to-purple-600">
+              PostGenie Pro
+            </h1>
+          </div>
+          <div className="text-xs font-medium text-slate-500 border border-slate-200 px-2 py-1 rounded-full hidden sm:block">
+            AI 社群貼文助手
+          </div>
+        </div>
+      </header>
+
+      <main className="max-w-6xl mx-auto px-4 py-8">
+        {errorMsg && (
+          <div className="fixed top-20 right-4 bg-red-100 border border-red-400 text-red-700 px-4 py-3 rounded z-50 animate-bounce">
+            {errorMsg}
+          </div>
+        )}
+
+        {step === 1 && (
+          <div className="grid md:grid-cols-12 gap-8 animate-in fade-in slide-in-from-bottom-4 duration-500">
+            {/* Left: Upload & Platform (5 cols) */}
+            <div className="md:col-span-5 space-y-6">
+              <div className="bg-white p-6 rounded-2xl shadow-sm border border-slate-100">
+                <h2 className="text-lg font-semibold mb-4 flex items-center gap-2 text-slate-700">
+                  <div className="w-6 h-6 rounded-full bg-indigo-100 text-indigo-600 text-xs flex items-center justify-center">1</div>
+                  主素材與平台
+                </h2>
+                
+                {/* Upload Area */}
+                <div 
+                  className={`group border-2 border-dashed rounded-xl h-56 flex flex-col items-center justify-center cursor-pointer transition-all mb-6 relative overflow-hidden ${mediaPreview ? 'border-indigo-300' : 'border-slate-300 hover:border-indigo-400 hover:bg-slate-50'}`}
+                  onClick={() => fileInputRef.current.click()}
+                >
+                  <input type="file" ref={fileInputRef} className="hidden" accept="image/*" onChange={handleFileChange} />
+                  
+                  {mediaPreview ? (
+                    <>
+                      <img src={mediaPreview} alt="Preview" className="w-full h-full object-cover" />
+                      <div className="absolute inset-0 bg-black/40 opacity-0 group-hover:opacity-100 transition-opacity flex items-center justify-center">
+                         <span className="text-white text-sm font-medium flex items-center gap-1 bg-black/50 px-3 py-1 rounded-full backdrop-blur-sm">
+                           <RefreshCcw size={14} /> 更換圖片
+                         </span>
+                      </div>
+                    </>
+                  ) : (
+                    <div className="text-center p-6">
+                      <div className="w-14 h-14 bg-indigo-50 text-indigo-500 rounded-full flex items-center justify-center mx-auto mb-3 group-hover:scale-110 transition-transform">
+                        <Upload size={24} />
+                      </div>
+                      <p className="text-slate-600 font-medium text-sm">點擊上傳主圖片</p>
+                      <p className="text-slate-400 text-xs mt-1">支援 JPG, PNG</p>
+                    </div>
+                  )}
+                </div>
+
+                {/* Platform Selector */}
+                <div className="space-y-2">
+                  <label className="text-sm font-medium text-slate-700">選擇發布平台</label>
+                  <div className="grid grid-cols-3 gap-2">
+                    {platforms.map((p) => (
+                      <button
+                        key={p.id}
+                        onClick={() => setPlatform(p.id)}
+                        className={`flex items-center gap-2 p-2 rounded-lg border transition-all ${platform === p.id ? 'border-indigo-600 bg-indigo-50 text-indigo-900 ring-1 ring-indigo-200' : 'border-slate-200 text-slate-600 hover:bg-slate-50'}`}
+                      >
+                        <div className={`w-6 h-6 rounded-full flex items-center justify-center ${p.color} scale-75`}>
+                          {p.icon}
+                        </div>
+                        <span className="text-xs font-medium">{p.name}</span>
+                      </button>
+                    ))}
+                  </div>
+                </div>
+              </div>
+
+               {/* Reference Section (New) */}
+               <div className="bg-white p-6 rounded-2xl shadow-sm border border-slate-100">
+                <h2 className="text-lg font-semibold mb-4 flex items-center gap-2 text-slate-700">
+                  <div className="w-6 h-6 rounded-full bg-orange-100 text-orange-600 text-xs flex items-center justify-center">?</div>
+                  參考資料 (AI 模仿用)
+                </h2>
+                <div className="space-y-4">
+                  <div>
+                    <label className="block text-xs font-medium text-slate-500 mb-2">參考圖片 (風格/排版)</label>
+                    <div 
+                      className={`border border-dashed rounded-lg h-24 flex items-center justify-center cursor-pointer transition-all ${refMediaPreview ? 'border-orange-300' : 'border-slate-200 hover:bg-slate-50'}`}
+                      onClick={() => refFileInputRef.current.click()}
+                    >
+                      <input type="file" ref={refFileInputRef} className="hidden" accept="image/*" onChange={handleRefFileChange} />
+                      {refMediaPreview ? (
+                         <div className="relative w-full h-full p-1">
+                           <img src={refMediaPreview} alt="Ref" className="w-full h-full object-contain rounded" />
+                           <button className="absolute top-1 right-1 bg-white p-1 rounded-full shadow-sm" onClick={(e) => { e.stopPropagation(); setRefMedia(null); setRefMediaPreview(null); }}>
+                             <RefreshCcw size={10} />
+                           </button>
+                         </div>
+                      ) : (
+                        <div className="text-center text-slate-400 text-xs flex flex-col items-center gap-1">
+                          <ImageIcon size={16} />
+                          <span>上傳範例圖片</span>
+                        </div>
+                      )}
+                    </div>
+                  </div>
+                  
+                  <div>
+                    <label className="block text-xs font-medium text-slate-500 mb-2">參考文案 (語氣/結構)</label>
+                    <textarea 
+                      className="w-full p-3 rounded-lg border border-slate-200 text-xs focus:ring-2 focus:ring-orange-200 focus:border-orange-400 outline-none resize-none h-20"
+                      placeholder="貼上您喜歡的文案範本，AI 會學習它的語氣..."
+                      value={refText}
+                      onChange={(e) => setRefText(e.target.value)}
+                    />
+                  </div>
+                </div>
+              </div>
+            </div>
+
+            {/* Right: Details & Persona (7 cols) */}
+            <div className="md:col-span-7 space-y-6">
+              <div className="bg-white p-6 rounded-2xl shadow-sm border border-slate-100 h-full flex flex-col">
+                <h2 className="text-lg font-semibold mb-4 flex items-center gap-2 text-slate-700">
+                  <div className="w-6 h-6 rounded-full bg-indigo-100 text-indigo-600 text-xs flex items-center justify-center">2</div>
+                  內容設定與人設
+                </h2>
+
+                <div className="space-y-5 flex-1">
+                  <div>
+                    <label className="block text-sm font-medium text-slate-700 mb-1.5">
+                      貼文關鍵字 <span className="text-red-400">*</span>
+                    </label>
+                    <input
+                      type="text"
+                      className="w-full px-4 py-3 rounded-xl border border-slate-200 focus:border-indigo-500 focus:ring-4 focus:ring-indigo-500/10 transition-all outline-none text-sm"
+                      placeholder="例如：露營, 寧靜, 森林浴..."
+                      value={keywords}
+                      onChange={(e) => setKeywords(e.target.value)}
+                    />
+                  </div>
+
+                  {/* Persona Selector (New) */}
+                  <div>
+                    <label className="block text-sm font-medium text-slate-700 mb-2 flex items-center gap-2">
+                      <UserCircle2 size={16} />
+                      發文人設 / 場景 (Persona)
+                    </label>
+                    <div className="grid grid-cols-1 sm:grid-cols-2 gap-2">
+                      {personas.map((p) => (
+                        <button
+                          key={p.id}
+                          onClick={() => setPersona(p.id)}
+                          className={`flex items-start gap-3 p-3 rounded-xl border text-left transition-all ${persona === p.id ? 'border-indigo-500 bg-indigo-50 ring-1 ring-indigo-200' : 'border-slate-200 hover:border-slate-300 hover:bg-slate-50'}`}
+                        >
+                          <span className="text-2xl pt-0.5">{p.emoji}</span>
+                          <div>
+                            <div className={`text-sm font-bold ${persona === p.id ? 'text-indigo-900' : 'text-slate-700'}`}>{p.name}</div>
+                            <div className="text-[10px] text-slate-500 mt-0.5">{p.desc}</div>
+                          </div>
+                        </button>
+                      ))}
+                    </div>
+                  </div>
+
+                  <div>
+                    <label className="block text-sm font-medium text-slate-700 mb-1.5 flex items-center gap-2">
+                      視覺設計/排版需求
+                      <span className="flex items-center gap-1 text-xs text-white bg-gradient-to-r from-indigo-500 to-purple-500 px-2 py-0.5 rounded-full">
+                         <Wand2 size={10} /> AI 繪圖
+                      </span>
+                    </label>
+                    <div className="relative">
+                      <input
+                        type="text"
+                        className="w-full pl-10 pr-4 py-3 rounded-xl border border-slate-200 focus:border-indigo-500 focus:ring-4 focus:ring-indigo-500/10 transition-all outline-none text-sm"
+                        placeholder="例如：復古底片感、霓虹燈賽博龐克、宮崎駿動漫風..."
+                        value={visualStyle}
+                        onChange={(e) => setVisualStyle(e.target.value)}
+                      />
+                      <Palette size={18} className="absolute left-3 top-1/2 -translate-y-1/2 text-slate-400" />
+                    </div>
+                    <p className="text-xs text-slate-400 mt-1.5 ml-1">若填寫此欄，AI 將會重新繪製底圖，而不僅僅是排版。</p>
+                  </div>
+
+                  <div>
+                    <label className="block text-sm font-medium text-slate-700 mb-1.5">
+                      行動呼籲 (CTA) <span className="text-slate-400 font-normal text-xs ml-1">(選填)</span>
+                    </label>
+                    <input
+                      type="text"
+                      className="w-full px-4 py-3 rounded-xl border border-slate-200 focus:border-indigo-500 focus:ring-4 focus:ring-indigo-500/10 transition-all outline-none text-sm"
+                      placeholder="例如：點擊連結、留言 +1..."
+                      value={cta}
+                      onChange={(e) => setCta(e.target.value)}
+                    />
+                  </div>
+                </div>
+
+                <div className="mt-8 pt-6 border-t border-slate-100">
+                  <button
+                    onClick={callGeminiAPI}
+                    disabled={!media || !keywords}
+                    className={`w-full py-3.5 rounded-xl font-bold text-base flex items-center justify-center gap-2 transition-all ${
+                      media && keywords
+                        ? 'bg-gradient-to-r from-indigo-600 to-purple-600 text-white hover:shadow-lg hover:shadow-indigo-500/30 transform hover:-translate-y-0.5' 
+                        : 'bg-slate-100 text-slate-400 cursor-not-allowed'
+                    }`}
+                  >
+                    <Sparkles size={18} />
+                    {media ? (keywords ? 'AI 立即生成' : '請輸入關鍵字') : '請先上傳照片'}
+                  </button>
+                </div>
+              </div>
+            </div>
+          </div>
+        )}
+
+        {step === 2 && (
+          <div className="flex flex-col items-center justify-center min-h-[50vh] animate-in fade-in duration-700">
+            <div className="relative">
+              <div className="w-20 h-20 border-4 border-indigo-100 border-t-indigo-600 rounded-full animate-spin"></div>
+              <Sparkles className="absolute inset-0 m-auto text-indigo-600 animate-pulse" size={24} />
+            </div>
+            <h2 className="text-xl font-bold mt-6 text-slate-800">AI 正在施展魔法</h2>
+            <p className="text-slate-500 mt-2 text-sm flex items-center gap-2">
+               <Loader2 size={14} className="animate-spin" />
+               {loadingStatus}
+            </p>
+            {visualStyle && (
+              <div className="mt-4 px-4 py-2 bg-indigo-50 text-indigo-700 rounded-lg text-xs font-medium">
+                正在使用 Gemini Image 模型進行風格轉換...
+              </div>
+            )}
+            <div className="mt-2 text-xs text-slate-400">
+               {refMedia || refText ? `正在學習參考資料中的風格...` : ''}
+            </div>
+          </div>
+        )}
+
+        {step === 3 && generatedResult && (
+          <div className="animate-in slide-in-from-bottom-8 duration-700 grid lg:grid-cols-12 gap-8 items-start">
+            
+            <div className="lg:col-span-12 flex items-center justify-between mb-2">
+               <button onClick={() => setStep(1)} className="flex items-center gap-2 text-sm text-slate-500 hover:text-indigo-600 transition-colors">
+                <ArrowRight className="rotate-180" size={16} /> 返回修改
+              </button>
+               <div className="flex gap-2">
+                 <button onClick={resetApp} className="flex items-center gap-1 px-3 py-1.5 bg-white border border-slate-200 rounded-lg text-slate-600 hover:bg-slate-50 text-sm">
+                  <RefreshCcw size={14} /> 重來
+                </button>
+                <button className="flex items-center gap-1 px-3 py-1.5 bg-indigo-600 text-white rounded-lg hover:bg-indigo-700 text-sm shadow-sm hover:shadow">
+                  <Share2 size={14} /> 發布
+                </button>
+              </div>
+            </div>
+
+            <div className="lg:col-span-5 space-y-4">
+              <div className="bg-white rounded-2xl shadow-lg border border-slate-200 overflow-hidden">
+                <div className="p-4 border-b border-slate-100 flex items-center justify-between bg-slate-50/50">
+                  <h3 className="font-semibold text-slate-700 flex items-center gap-2 text-sm">
+                    <ImageIcon size={16} className="text-indigo-500" />
+                    封面設計預覽
+                  </h3>
+                  <div className="flex items-center gap-2">
+                    {aiCoverImage && (
+                      <span className="text-[10px] bg-gradient-to-r from-purple-500 to-indigo-500 text-white px-2 py-0.5 rounded-full flex items-center gap-1">
+                        <Wand2 size={8} /> AI 生成底圖
+                      </span>
+                    )}
+                    <div className="text-[10px] text-slate-400 uppercase tracking-wider font-medium">
+                      {ratios.find(r => r.id === coverRatio)?.name}
+                    </div>
+                  </div>
+                </div>
+
+                <div className="p-3 border-b border-slate-100 grid grid-cols-1 gap-4">
+                  <div>
+                    <label className="text-xs font-semibold text-slate-500 mb-2 flex items-center gap-1">
+                      <Maximize size={12} /> 圖片比例
+                    </label>
+                    <div className="flex gap-2 overflow-x-auto pb-1 scrollbar-hide">
+                      {ratios.map(r => (
+                        <button
+                          key={r.id}
+                          onClick={() => setCoverRatio(r.class)}
+                          className={`px-3 py-1.5 text-xs whitespace-nowrap rounded-md border transition-colors ${
+                            coverRatio === r.class 
+                              ? 'bg-slate-800 text-white border-slate-800' 
+                              : 'bg-white text-slate-600 border-slate-200 hover:border-slate-300'
+                          }`}
+                        >
+                          {r.name.split(' ')[0]}
+                        </button>
+                      ))}
+                    </div>
+                  </div>
+
+                  <div>
+                    <label className="text-xs font-semibold text-slate-500 mb-2 flex items-center gap-1">
+                      <Layout size={12} /> 排版風格
+                    </label>
+                    <div className="flex gap-2 overflow-x-auto pb-1 scrollbar-hide">
+                      {Object.entries(coverStyles).map(([key, style]) => (
+                        <button
+                          key={key}
+                          onClick={() => setCoverStyle(key)}
+                          className={`px-3 py-1.5 text-xs whitespace-nowrap rounded-md border transition-colors ${
+                            coverStyle === key 
+                              ? 'bg-indigo-600 text-white border-indigo-600' 
+                              : 'bg-white text-slate-600 border-slate-200 hover:border-slate-300'
+                          }`}
+                        >
+                          {style.name}
+                        </button>
+                      ))}
+                    </div>
+                  </div>
+                </div>
+
+                <div className="p-6 bg-slate-100 flex items-center justify-center overflow-hidden">
+                  <div className={`relative w-full ${coverRatio} shadow-xl group transition-all duration-300`}>
+                    
+                    <img 
+                      src={aiCoverImage || mediaPreview} 
+                      alt="Cover" 
+                      className="absolute inset-0 w-full h-full object-cover transition-all duration-500"
+                      style={!aiCoverImage ? { filter: coverStyle === 'cinematic' ? 'contrast(1.1) saturation(0.8)' : 'brightness(0.9)' } : {}}
+                    />
+
+                    <div className={`absolute inset-0 transition-all duration-300 ${currentStyle.overlayClass}`}></div>
+                    
+                    {currentStyle.deco(platform)}
+
+                    <div className={`absolute transition-all duration-300 ${currentStyle.textContainerClass}`}>
+                      <h2 className={currentStyle.titleClass}>
+                        {generatedResult.coverTitle || keywords}
+                      </h2>
+                      <div className={currentStyle.subtitleClass}>
+                        {generatedResult.coverSubtitle || 'AI Generated Title'}
+                      </div>
+                    </div>
+
+                    <div className="absolute inset-0 bg-black/50 opacity-0 group-hover:opacity-100 transition-opacity flex items-center justify-center z-20">
+                      <button className="bg-white text-slate-900 px-4 py-2 rounded-full font-medium text-sm flex items-center gap-2 transform translate-y-2 group-hover:translate-y-0 transition-transform">
+                        <Download size={16} /> 下載封面
+                      </button>
+                    </div>
+                  </div>
+                </div>
+              </div>
+            </div>
+
+            <div className="lg:col-span-7 space-y-4">
+              <div className="bg-white rounded-2xl shadow-sm border border-slate-200 h-full flex flex-col min-h-[600px]">
+                <div className="p-4 border-b border-slate-100 flex items-center justify-between">
+                  <div className="flex items-center gap-2">
+                     <div className={`p-1.5 rounded-lg ${platforms.find(p => p.id === platform)?.color}`}>
+                       {platforms.find(p => p.id === platform)?.icon}
+                     </div>
+                     <span className="font-semibold text-slate-700 text-sm">
+                       {platforms.find(p => p.id === platform)?.name} 文案
+                     </span>
+                  </div>
+                  <button 
+                    onClick={handleCopy}
+                    className={`flex items-center gap-1.5 px-3 py-1.5 rounded-lg text-xs font-medium transition-all ${
+                      isCopied 
+                        ? 'bg-emerald-100 text-emerald-700' 
+                        : 'bg-slate-100 text-slate-600 hover:bg-slate-200'
+                    }`}
+                  >
+                    {isCopied ? <Check size={14} /> : <Copy size={14} />}
+                    {isCopied ? '已複製' : '複製內容'}
+                  </button>
+                </div>
+
+                <div className="relative flex-1">
+                  <textarea
+                    className="w-full h-full p-6 resize-none outline-none text-slate-700 leading-relaxed text-base font-sans bg-transparent"
+                    value={platform === 'blog' 
+                      ? generatedResult.caption 
+                      : generatedResult.caption + '\n\n' + (generatedResult.hashtags || '')
+                    }
+                    onChange={(e) => {
+                      setGeneratedResult({...generatedResult, caption: e.target.value})
+                    }}
+                  />
+                </div>
+                
+                <div className="p-3 bg-slate-50 border-t border-slate-100 rounded-b-2xl">
+                  <div className="flex items-center gap-2 text-xs text-slate-500">
+                    <Sparkles size={14} className="text-indigo-400" />
+                    <span>
+                      {aiCoverImage ? '已重繪底圖，' : ''}文案已依據「{personas.find(p => p.id === persona)?.name}」人設及參考資料優化。
+                    </span>
+                  </div>
+                </div>
+              </div>
+            </div>
+          </div>
+        )}
+      </main>
+    </div>
+  );
+}
